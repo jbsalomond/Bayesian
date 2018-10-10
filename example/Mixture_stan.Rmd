@@ -1,0 +1,145 @@
+---
+title: "Modèle de mélange avec Stan"
+output: 
+  html_notebook: 
+    fig_caption: yes
+    css: styleGH.css
+    highlight: kate
+---
+```{r,echo = FALSE,message=FALSE}
+set.seed(1312)
+library(rstan)
+library(rmarkdown)
+library(knitr)
+library(ggplot2)
+```
+## Présentation 
+
+Dans certains cas la complexité d'un modèle provient du fait que l'on observe pas une variable. Un cas particulier est celui où les données proviennent de plusieurs sous groupes qu'on ne connait pas. 
+
+## Le modèle 
+
+Soit \(Z\) une variable aléatoire sur \(\{1,\dots,K\}\) représentant l'appartenance à une classe. On se donne le modèle suivant
+\[ 
+\begin{align*}
+Z &\sim \mathcal{M}(p_1, \dots, p_K) \\ 
+X\vert Z=k &\sim f_k
+\end{align*}
+\]
+où \(f_k\) sont des densités de probabilité. En général les lois \(f_k\) sont prisent dans la même famille de loi, seule le paramètre diffère : \(f_k(x) = f(x|\theta_k)\) 
+
+Il arrive que l'on ait accès qu'à la variable \(X\) (sans \(Z\)). La loi des données est donc la loi marginale 
+\[
+f_X(x) = \sum_{k=1}^K p_k f_k(x) 
+\]
+
+On remarque que dans ce cas la vaisemblance du modèle est donnée par 
+\[
+\mathcal{L}(\pmb{\theta}|X_1,\dots,X_n) = \prod_{i=1}^n \left( \sum_{k=1}^K p_k f(X_i|\theta_k) \right)
+\]
+
+L'approche bayésienne pour ce type de modèle est particulièrement bien adaptée, en effet on a un modèle hierarchique et \(Z\) peut être vu comme un paramètre de nuisance, qu'il _suffira_ d'intégrer 
+
+## Exemple 
+
+Soit le modèle de mélange suivant 
+\[
+f_X(x) = p \mathcal{N}(x|\theta_1,1) + (1-p)\mathcal{N}(x|\theta_2,1)
+\]
+
+```{r,out.width = "50%",fig.show='hold'}
+
+n = 150
+p0 = 0.3
+mu1 = 1
+mu2 = 4
+Z = rbinom(n,size = 1,prob = p0)
+X = rnorm(n,mu1,1)*Z + rnorm(n,mu2,1)*(1-Z)
+df = data.frame(X,Z = factor(Z))
+ggplot(data = df,aes(x=X)) + 
+  geom_density(fill = "blue",alpha = 0.5) + 
+  theme_bw()
+
+ggplot(data = df,aes(x=X,fill = Z)) +
+  geom_histogram(alpha = 0.5) + 
+  theme_bw()
+```
+
+
+Choisissons une loi a priori suivante 
+\[
+\begin{align*}
+p &\sim \beta(a,b) \\ 
+Z_i| p &\sim \mathcal{B}(p) \\
+\theta_k &\sim \mathcal{N}(m,\tau)
+\end{align*}
+\]
+On peut directement calculer la loi a posteriori (en exercice), la difficulté étant d'intégrer $Z$. 
+
+## Avec Stan 
+
+```{stan "Mixture_faithful.stan"} 
+data{
+  int<lower = 0> n;
+  vector[n] X ; 
+}
+parameters{
+  real<lower = 0,upper = 1> lambda ;
+  real mu1 ; 
+  real mu2 ; 
+  real<lower = 0> s1 ; 
+  real<lower = 0> s2 ; 
+}
+model{
+  for(i in 1:n)
+    target += log_mix(lambda, 
+    normal_lpdf(X[i]|mu1,s1), 
+    normal_lpdf(X[i]|mu2,s2)) ; 
+
+  lambda ~ beta(1,1) ;
+  mu1 ~ normal(0,100) ; 
+  mu2 ~ normal(0,100) ; 
+  s1 ~ inv_gamma(1,1); 
+  s2 ~ inv_gamma(1,1); 
+}
+
+```
+
+```{r,message=FALSE}
+standata = list(X=X,n = length(X))
+fitout = stan("Mixture_faithful.stan",data = standata,warmup = 1000,iter = 5000,chains = 1)
+```
+
+```{r, echo = FALSE,results="asis"}
+library(knitr)
+kable(summary(fitout))
+```
+
+```{r, echo = FALSE}
+library(bayesplot)
+mcmc_acf(as.array(fitout),pars = c("mu1","mu2"))
+mcmc_combo(as.array(fitout),pars = c("mu1","mu2"))
+```
+
+
+
+## Application au données _Old Faithful_
+On applique le modèle précédent aux données d'éruption du gésère _old Faithful_
+
+>Le Old Faithful (« vieux fidèle » en anglais) est un geyser situé dans le parc national de Yellowstone, aux États-Unis. Ce geyser produit l'un des plus grands jets d'eau chaude et de vapeur au monde, avec le Strokkur islandais. 
+
+```{r}
+data = faithful
+X = faithful$eruptions
+standata = list(X=X,n = length(X))
+fit = stan("Mixture_faithful.stan",data = standata,warmup = 1000,iter = 3000,chains = 1)
+
+resfit = summary(fit)
+
+hist(X,prob = T,nclass = 30)
+abline(v = resfit$summary[2,1])
+abline(v = resfit$summary[3,1])
+
+mcmc_areas(as.array(fit),pars = c("mu1"),prob = .9)
+mcmc_areas(as.array(fit),pars = c("mu2"),prob = .9)
+```
